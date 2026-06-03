@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release"
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Clone and build vscode
+        env:
+          VSCODE_DIR: ${{ runner.temp }}/vscode
+        run: |
+          sudo apt-get update && sudo apt-get install -y libkrb5-dev
+          git clone --depth=1 https://github.com/microsoft/vscode.git "$VSCODE_DIR"
+          cd "$VSCODE_DIR"
+          npm ci --ignore-scripts
+          cd "$VSCODE_DIR/extensions/json-language-features/server"
+          npm run compile
+
+      - name: Extract and transpile JSON language server
+        env:
+          VSCODE_DIR: ${{ runner.temp }}/vscode
+          DIST_DIR: ${{ runner.temp }}/dist
+          LIB_DIR: ${{ github.workspace }}/lib
+        run: |
+          mkdir -p "$DIST_DIR/json-language-server"
+          cp -r "$VSCODE_DIR/extensions/json-language-features/server/out/"* "$DIST_DIR/json-language-server/"
+          mkdir -p "$LIB_DIR/json-language-server"
+          npx --yes @babel/cli "$DIST_DIR/json-language-server" --out-dir "$LIB_DIR/json-language-server"
+
+      - name: Create archive
+        env:
+          LIB_DIR: ${{ github.workspace }}/lib
+        run: tar -czf vscode-json-languageserver.tar.gz -C lib json-language-server
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if [ ! -f vscode-json-languageserver.tar.gz ]; then
+            echo "::error::Archive file not found"
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" vscode-json-languageserver.tar.gz \
+            --title "$RELEASE_TAG" \
+            --generate-notes
